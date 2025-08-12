@@ -1,6 +1,111 @@
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, Page
+from bs4 import BeautifulSoup, Tag
 import json
-import re
+from ncls_formatter import ncls_formatter
+
+def extract_bold(soup: BeautifulSoup, label: str) -> str | None:
+    """
+    Finds a <b> tag with a given label and extracts all subsequent text
+    content until a <br> tag is encountered.
+    """
+    bold_tag = soup.find("b", string=lambda t: t and t.strip().startswith(label))
+    if not bold_tag:
+        return None
+    
+    content = []
+    # Loop through the nodes immediately following the <b> tag
+    for sibling in bold_tag.next_siblings:
+        # Stop when we hit the line break for the next field
+        if sibling.name == 'br':
+            break
+        
+        # If the sibling is another tag (like an <a>), get its text
+        if isinstance(sibling, Tag):
+            content.append(sibling.get_text(strip=True))
+        # If it's a NavigableString (just text), strip and add it
+        else:
+            content.append(str(sibling).strip())
+            
+    # Join the collected parts and clean up
+    full_text = " ".join(filter(None, content))
+    return full_text if full_text else None
+
+
+def scrape_bills(page: Page) -> list:
+    bills_data = []
+    
+    # 1. Get the HTML of the entire results container for robust parsing
+    results_container_html = page.locator('#dnn_ctr15755_StateNetDB_linkList').inner_html()
+    
+    # 2. Parse the entire block with BeautifulSoup
+    soup = BeautifulSoup(results_container_html, "html.parser")
+
+    # 3. Find all bill headers, which act as starting points for each bill
+    bill_headers = soup.find_all("div", class_="h2Headers1")
+
+    for header in bill_headers:
+        # 4. Collect all HTML tags belonging to a single bill.
+        # A bill's content starts at a header and ends before the next header or <hr>.
+        bill_tags = [header]
+        for sibling in header.find_next_siblings():
+            # Stop if we've reached the next bill's header
+            if sibling.name == 'div' and 'h2Headers1' in sibling.get('class', []):
+                break
+            # Or stop if we've reached the separator between bills
+            if sibling.name == 'hr':
+                break
+            bill_tags.append(sibling)
+
+        # 5. Create a new, isolated soup object for just this bill's complete HTML
+        bill_html = "".join(str(t) for t in bill_tags)
+        bill_soup = BeautifulSoup(bill_html, "html.parser")
+
+        # 6. Extract fields using the complete and isolated bill HTML
+        state = bill_soup.find("div", class_="h2Headers1").get_text(strip=True)
+
+        bill_link_tag = bill_soup.find("a")
+        bill_number = bill_link_tag.get_text(strip=True) if bill_link_tag else None
+        bill_url = bill_link_tag['href'] if bill_link_tag else None
+
+        # The year is reliably found after the bill link and a <br> tag
+        year = None
+        if bill_link_tag and bill_link_tag.find_next_sibling('br'):
+            year_node = bill_link_tag.find_next_sibling('br').next_sibling
+            if year_node:
+                year = year_node.strip()
+
+        subject_div = bill_soup.find("div", style="font-weight: bold;")
+        subject_text = subject_div.get_text(strip=True) if subject_div else None
+
+        # Use the improved helper function to reliably extract data
+        bills_data.append({
+            "state": state,
+            "bill_number": bill_number,
+            "bill_url": bill_url,
+            "year": year,
+            "subject": subject_text,
+            "status": extract_bold(bill_soup, "Status:"),
+            "date_last_action": extract_bold(bill_soup, "Date of Last Action:"),
+            "author_info": extract_bold(bill_soup, "Author:"),
+            "topics": extract_bold(bill_soup, "Topics:"),
+            "associated_bills": extract_bold(bill_soup, "Associated Bills:"),
+            "summary": extract_bold(bill_soup, "Summary:")
+        })
+
+    return bills_data
+
+def save_bills_to_json(page, filename: str):
+    """
+    Saves the list of bills data to a JSON file.
+    """
+    ndjson_data = scrape_bills(page)
+
+    # Write NDJSON
+    with open("data/{filename}", "w", encoding="utf-8") as f:
+        for line in ndjson_data:
+            f.write(json.dumps(line) + "\n")
+
+    print(f"✅ Scraped {len(ndjson_data)} bills. Saved to {filename}.")
 
 def scrape_ncsl():
     with sync_playwright() as p:
@@ -37,73 +142,20 @@ def scrape_ncsl():
         # Wait until the page contains an element inside the #dnn_ctr15755_StateNetDB_linkList container includes the visible text "Summary:".
         page.wait_for_selector("#dnn_ctr15755_StateNetDB_linkList >> text=Summary:")
 
-        elements = results_container.locator("xpath=./*")
-        count = elements.count()
+        # Select all bill blocks
+        bill_blocks = page.locator('xpath=//div[@id="dnn_ctr15755_StateNetDB_linkList"]')
+        
+        # Extract inner HTML of the div
+        html_content = page.eval_on_selector(
+            "#dnn_ctr15755_StateNetDB_linkList", "el => el.innerHTML"
+        )
 
-        ndjson_lines = []
-        current_state = None
+        print(html_content)
 
-        for i in range(count):
-            el = elements.nth(i)
-            tag = el.evaluate("e => e.tagName")
-
-            if tag == "DIV":
-                class_attr = el.get_attribute("class") or ""
-
-                # Detect state header
-                if "h2Headers1" in class_attr:
-                    current_state = el.inner_text().strip().split("\n")[0]
-
-                # Detect bill div (no class, contains bill link)
-                elif class_attr == "":
-                    anchor = el.locator("a")
-                    if anchor.count() > 0:
-                        bill_number = anchor.inner_text().strip()
-                        year = el.inner_text().strip().split("\n")[-1].strip()
-                        bill_url = anchor.get_attribute("href").strip()
-                        
-                        # Look ahead to grab metadata in following sibling divs
-                        status = ""
-                        date = ""
-                        sponsor = ""
-                        summary = ""
-
-                        # Check next few siblings
-                        for j in range(1, 6):
-                            if i + j >= count:
-                                break
-
-                            next_el = elements.nth(i + j)
-                            text = next_el.inner_text().strip()
-
-                            if text.startswith("Status:"):
-                                status = text.replace("Status:", "").strip()
-                            elif text.startswith("Date of Last Action:"):
-                                date = text.replace("Date of Last Action:", "").strip()
-                            elif text.startswith("Author:"):
-                                match = re.search(r"Author:\s*(.+?)(?:Additional Authors:|Topics:|$)", text)
-                                if match:
-                                    sponsor = match.group(1).strip()
-                            elif text.startswith("Summary:"):
-                                summary = text.replace("Summary:", "").strip()
-
-                        ndjson_lines.append({
-                            "State": current_state,
-                            "BillNumber": bill_number,
-                            "Status": status,
-                            "Date": date,
-                            "Sponsor": sponsor,
-                            "Summary": summary,
-                            "URL": bill_url,
-                            "Year": year
-                        })
-
-        # Write NDJSON
-        with open("data/surveillance_bills.ndjson", "w", encoding="utf-8") as f:
-            for line in ndjson_lines:
-                f.write(json.dumps(line) + "\n")
-
-        print(f"✅ Scraped {len(ndjson_lines)} bills. Saved to surveillance_bills.ndjson.")
+        formatter = ncls_formatter(is_mock=True)
+        html_table = formatter.format_as_html_table(html_content)
+        print("Generated HTML Table:")
+        print(html_table)
 
         browser.close()
 
