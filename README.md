@@ -7,7 +7,7 @@ I'm using a lot of LLM conversations to build this proof-of-concept. You can rev
 - [Building bill scraper proof of concept](https://chatgpt.com/share/689bb48c-fec8-8013-8fab-fd313a923dfc)
 - [Playwright web scraping tutorial](https://chatgpt.com/share/689bac5e-28c8-8013-aedc-2089543ea6b7)
 - [XPath for Status](https://chatgpt.com/share/689b1e20-5624-8013-99e6-b85b1e5dc3be)
-- [Python exception handling](https://chatgpt.com/share/689bac88-a308-8013-9615-9529be89ce750
+- [Python exception handling](https://chatgpt.com/share/689bac88-a308-8013-9615-9529be89ce750)
 - [Using .env files with Python](https://chatgpt.com/share/689baba5-783c-8013-bedf-8dcacaa5c0bf)
 - [Fix API_KEY error](https://chatgpt.com/share/689bb520-c76c-8013-98f4-43bb235a4a5b)
 - [Fix script error](https://chatgpt.com/share/689bb689-cf0c-8013-9d27-40ac4bfb70f6)
