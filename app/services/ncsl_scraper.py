@@ -2,6 +2,7 @@ from playwright.sync_api import sync_playwright, Page
 from bs4 import BeautifulSoup, Tag
 import json
 from ncls_formatter import ncls_formatter
+from send_html_email import send_html_email
 
 def extract_bold(soup: BeautifulSoup, label: str) -> str | None:
     """
@@ -150,6 +151,8 @@ def scrape_ncsl():
             "#dnn_ctr15755_StateNetDB_linkList", "el => el.innerHTML"
         )
 
+        browser.close()
+
         print(html_content)
 
         formatter = ncls_formatter(is_mock=True)
@@ -157,7 +160,9 @@ def scrape_ncsl():
         print("Generated HTML Table:")
         print(html_table)
 
-        browser.close()
+        # Send the email with the HTML table
+        email_service = send_html_email(html_fragment=html_table)
+        email_service.send()
 
 if __name__ == "__main__":
     scrape_ncsl()
